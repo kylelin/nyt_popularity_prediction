@@ -8,7 +8,7 @@
 libs = c("ggplot2", "extrafont", "gridExtra",
          "tm", "SnowballC",
          "randomForest", "caret",
-         "psych", "reshape")
+         "psych", "reshape", "ggdendro")
 
 lapply(libs, library, character.only=TRUE)
 
@@ -485,4 +485,194 @@ ggsave(filename="doc/imgs/rf_feature_importance.png", plot=p, type="cairo-png", 
 ## AUC of basic random forest
 calcAUC(rfModel, newsTrain$Popular)
 
+
+"
+PubDay + Hour + SectionName + NewsDesk + SubsectionName + 
+WordCount + Weekday + HeadlineCharCount + SummaryCharCount + 
+HeadlineWordCount + SummaryWordCount + LogWordCount + 
+NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + SEO + 
+Exclamation + HowTo + NoComment + Recurrent + Obama + Republican + 
+Holiday + BeforeHoliday + Current + Cuba + Recap + UN + Health + 
+Family + Tech + Security + Biz + War + Holidays + Boring, 
+"
+## until now, we haven't use any text feature like `Summary`, `Headline`
+## and we only used supervised learning algorithms like random forest
+## by utilizing unsupervised algorithms, it is expected to extract some 
+## common structure between training and testing data
+
 ## random forest + k-means
+### tf-idf
+dropWords = c(stopwords("SMART"))
+CorpusHeadline = Corpus(VectorSource(news$Headline))
+CorpusHeadline = tm_map(CorpusHeadline, tolower)
+CorpusHeadline = tm_map(CorpusHeadline, PlainTextDocument)
+CorpusHeadline = tm_map(CorpusHeadline, removePunctuation)
+CorpusHeadline = tm_map(CorpusHeadline, removeWords, dropWords)
+CorpusHeadline = tm_map(CorpusHeadline, stemDocument, language="english")
+dtmHeadline = DocumentTermMatrix(CorpusHeadline)
+tdmHeadline = TermDocumentMatrix(CorpusHeadline)
+
+sparseHeadline = removeSparseTerms(dtmHeadline, 0.995)  
+sparseHeadline = as.data.frame(as.matrix(sparseHeadline))
+colnames(sparseHeadline) = make.names(paste0("H",colnames(sparseHeadline)))
+
+tsparseHeadline = removeSparseTerms(tdmHeadline, 0.995)  
+tsparseHeadline = as.data.frame(as.matrix(tsparseHeadline))
+colnames(tsparseHeadline) = make.names(paste0("H",colnames(tsparseHeadline)))
+ 
+CorpusSummary = Corpus(VectorSource(news$Summary))
+CorpusSummary = tm_map(CorpusSummary, tolower)
+CorpusSummary = tm_map(CorpusSummary, PlainTextDocument)
+CorpusSummary = tm_map(CorpusSummary, removePunctuation)
+CorpusSummary = tm_map(CorpusSummary, removeWords, dropWords)
+CorpusSummary = tm_map(CorpusSummary, stemDocument, language="english")
+dtmSummary = DocumentTermMatrix(CorpusSummary)
+tdmSummary = TermDocumentMatrix(CorpusSummary)
+
+sparseSummary = removeSparseTerms(dtmSummary, 0.99)  
+sparseSummary = as.data.frame(as.matrix(sparseSummary))
+colnames(sparseSummary) = make.names(paste0("S",colnames(sparseSummary)))
+ 
+tsparseSummary = removeSparseTerms(tdmSummary, 0.99)  
+tsparseSummary = as.data.frame(as.matrix(tsparseSummary))
+colnames(tsparseSummary) = make.names(paste0("S",colnames(tsparseSummary)))
+ 
+CorpusText = Corpus(VectorSource(news$Text))
+CorpusText = tm_map(CorpusText, tolower)
+CorpusText = tm_map(CorpusText, PlainTextDocument)
+CorpusText = tm_map(CorpusText, removePunctuation)
+CorpusText = tm_map(CorpusText, removeWords, dropWords)
+CorpusText = tm_map(CorpusText, stemDocument, language="english")
+tdmText = TermDocumentMatrix(CorpusText)
+sparseText = removeSparseTerms(tdmText, 0.99)  
+sparseText = as.data.frame(as.matrix(sparseText))
+colnames(tsparseSummary) = make.names(colnames(sparseText))
+
+freqTerms = findFreqTerms(dtmHeadline, lowfreq=100)
+termFreq  = colSums(as.matrix(dtmHeadline))
+termFreq  = subset(termFreq, termFreq>=100)
+df        = data.frame(term=names(termFreq), freq=termFreq)
+
+p = ggplot(df, aes(x=reorder(term, freq, max), y=freq)) +
+  geom_bar(stat="identity") +
+  ggtitle("Most Common Terms in the Headline") +
+  xlab("Terms") +
+  ylab("Frequency") +
+  coord_flip()
+ggsave(filename="doc/imgs/dtf_headline.png", plot=p, type="cairo-png", dpi=300, width=8, height=8)
+
+freqTerms = findFreqTerms(dtmSummary, lowfreq=100)
+termFreq  = colSums(as.matrix(dtmSummary))
+termFreq  = subset(termFreq, termFreq>=100)
+df        = data.frame(term=names(termFreq), freq=termFreq)
+
+p = ggplot(df, aes(x=reorder(term, freq, max), y=freq)) +
+  geom_bar(stat="identity") +
+  ggtitle("Most Common Terms in the Summary") +
+  xlab("Terms") +
+  ylab("Frequency") +
+  coord_flip()
+ggsave(filename="doc/imgs/dtf_summary.png", plot=p, type="cairo-png", dpi=300, width=8, height=24)
+
+
+matrixSparseSummary  = as.matrix(tsparseSummary)
+matrixSparseSummary.distMatrix = dist(scale(matrixSparseSummary))
+matrixSparseSummary.clusters   = hclust(matrixSparseSummary.distMatrix, method="ward.D2")
+
+dSummary = as.dendrogram(matrixSparseSummary.clusters)
+dSummaryData <- dendro_data(dSummary, type = "rectangle")
+
+p = ggplot(segment(dSummaryData)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  coord_flip() 
+ggsave(filename="doc/imgs/hclust_summary.png", plot=p, type="cairo-png", dpi=300, width=8, height=8)
+
+kSummary   = 25
+mSummary   = t(tsparseSummary)
+KMCSummary = kmeans(mSummary, kSummary)
+ 
+for (i in 1:kSummary) {
+  cat(paste("cluster ", i, ": ", sep=","))
+  s = sort(KMCSummary$centers[i, ], decreasing=TRUE)
+  cat(names(s)[1:15], sep=", ", "\n")
+}
+
+matrixSparseHeadline  = as.matrix(tsparseHeadline)
+matrixSparseHeadline.distMatrix = dist(scale(matrixSparseHeadline))
+matrixSparseHeadline.clusters   = hclust(matrixSparseHeadline.distMatrix, method="ward.D2")
+
+dHeadline = as.dendrogram(matrixSparseHeadline.clusters)
+dHeadlineData <- dendro_data(dHeadline, type = "rectangle")
+
+p = ggplot(segment(dHeadlineData)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  coord_flip() 
+ggsave(filename="doc/imgs/hclust_headline.png", plot=p, type="cairo-png", dpi=300, width=8, height=8)
+
+kHeadline   = 25
+mHeadline   = t(tsparseHeadline)
+KMCHeadline = kmeans(mHeadline, kHeadline)
+ 
+for (i in 1:kHeadline) {
+  cat(paste("cluster ", i, ": ", sep=","))
+  s = sort(KMCHeadline$centers[i, ], decreasing=TRUE)
+  cat(names(s)[1:15], sep=", ", "\n")
+}
+
+matrixSparseText  = as.matrix(sparseText)
+matrixSparseText.distMatrix = dist(scale(matrixSparseText))
+matrixSparseText.clusters   = hclust(matrixSparseText.distMatrix, method="ward.D2")
+
+dText = as.dendrogram(matrixSparseText.clusters)
+dTextData <- dendro_data(dText, type = "rectangle")
+
+p = ggplot(segment(dTextData)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  coord_flip() 
+ggsave(filename="doc/imgs/hclust_text.png", plot=p, type="cairo-png", dpi=300, width=8, height=8)
+
+kText   = 25
+mText   = t(tsparseHeadline)
+KMCText = kmeans(mText, kText)
+ 
+for (i in 1:kText) {
+  cat(paste("cluster ", i, ": ", sep=","))
+  s = sort(KMCText$centers[i, ], decreasing=TRUE)
+  cat(names(s)[1:15], sep=", ", "\n")
+}
+
+news$HeadlineCluster = as.factor(KMCHeadline$cluster)
+news$SummaryCluster  = as.factor(KMCSummary$cluster)
+news$TextCluster     = as.factor(KMCText$cluster)
+
+newsTrain = head(news, nrow(news_train))
+newsTest  = tail(news, nrow(news_test))
+
+# modeling
+## random forest
+rfModelKMC = randomForest(Popular ~ PubDay + Hour + SectionName + NewsDesk + SubsectionName +
+                                 WordCount + Weekday + HeadlineCharCount + SummaryCharCount +
+                                 HeadlineWordCount + SummaryWordCount + LogWordCount +
+                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + SEO +
+                                 Exclamation + HowTo + NoComment + Recurrent + Obama + Republican +
+                                 Holiday + BeforeHoliday + Current + Cuba + Recap + UN + Health +
+                                 Family + Tech + Security + Biz + War + Holidays + Boring +
+                                 TextCluster, 
+                      data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
+
+trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrain[trainPartition, ]
+rfModelKMC.tuned  = train(Popular ~ PubDay + Hour + SectionName + NewsDesk + SubsectionName +
+                                 WordCount + Weekday + HeadlineCharCount + SummaryCharCount +
+                                 HeadlineWordCount + SummaryWordCount + LogWordCount +
+                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + SEO +
+                                 Exclamation + HowTo + NoComment + Recurrent + Obama + Republican +
+                                 Holiday + BeforeHoliday + Current + Cuba + Recap + UN + Health +
+                                 Family + Tech + Security + Biz + War + Holidays + Boring +
+                                 TextCluster,
+                   data=tuneTrain,
+                   method="rf",
+                   trControl=trainControl(method="cv", number=5))
+
+## AUC of basic random forest
+calcAUC(rfModelKMC, newsTrain$Popular)
