@@ -4,56 +4,61 @@
 ####################################################
 
 # library load
-#libs = c("ggplot2", "caret", "randomForest")
-libs = c("ggplot2", "extrafont", "gridExtra",
-         "tm", "SnowballC",
-         "randomForest", "caret",
-         "psych", "reshape", "ggdendro")
+libs = c("ggplot2", 
+         "tm", 
+         "randomForest", 
+         "caret",
+         "psych", 
+         "reshape", 
+         "ggdendro")
 
 lapply(libs, library, character.only=TRUE)
+options(warn = 2, error = recover)
 
-# utility load
+# utility function load
 source('util.R')
 
 # data load
-news_train = read.csv("./data/NYTimesBlogTrain.csv", stringsAsFactors=FALSE)
-news_test  = read.csv("./data/NYTimesBlogTest.csv", stringsAsFactors=FALSE)
+trainData = read.csv("./data/NYTimesBlogTrain.csv", stringsAsFactors=FALSE)
+testData  = read.csv("./data/NYTimesBlogTest.csv", stringsAsFactors=FALSE)
+testData$Popular = NA
 
-news_test$Popular = NA
 ## combine training set and testing until finishing data transformation
-news = rbind(news_train, news_test)
-
-## summary(news)
-## table(news$Popular)
-## 1093/5439 ~ fewer than 17% of all New York Times blog articles have more than 25 coments.
-## that means, a baseline model for predicting unpopular would be around 83.2%
+newsData = rbind(trainData, testData)
 
 # bag-of-words on Headline
 # TODO
 
 # feature format
-news$Summary = ifelse(nchar(cleanupText(news$Snippet)) > nchar(cleanupText(news$Abstract)),
-                      cleanupText(news$Snippet),
-                      cleanupText(news$Abstract))
+newsData$Summary = ifelse(nchar(cleanupText(newsData$Snippet)) > nchar(cleanupText(newsData$Abstract)),
+                      cleanupText(newsData$Snippet),
+                      cleanupText(newsData$Abstract))
 
 ## replacement of some proper nouns to single word
+## 'word of the day'
+## 'time square'
+## 'pictures of the day', 'photos of the day'
+## 'daily clip report'
 originalText    = c("new york times", "new york city", "new york", "silicon valley", 
                     "times insider", "fashion week", "white house", 
                     "international herald tribune archive", 
-                    "president obama", "hong kong", "big data", "golden globe")
+                    "president obama", "hong kong", "big data", "golden globe", 
+                    "word of the day", "time square", "pictures of the day",
+                    "photos of the day", "daily clip report")
 
 replacementText = c("NYT", "NYC", "NewYork", "SiliconValley", "TimesInsider",
                     "FashionWeek", "WhiteHouse", "IHT", "Obama", "HongKong",
-                    "BigData", "GoldenGlobe")
+                    "BigData", "GoldenGlobe", "WordofDay", "TimeSquare", "PicOfDay",
+                    "PicOfDay", "DailyClipReport")
 
-news$Headline = phaseSub(news$Headline, originalText, replacementText, ignore.case=TRUE)
-news$Summary  = phaseSub(news$Summary,  originalText, replacementText, ignore.case=TRUE)
+newsData$Headline = phaseSub(newsData$Headline, originalText, replacementText, ignore.case=TRUE)
+newsData$Summary  = phaseSub(newsData$Summary,  originalText, replacementText, ignore.case=TRUE)
 
 rm(originalText)
 rm(replacementText)
 
 ## combine Headline and Summary
-news$Text = paste(news$Headline, news$Summary)
+newsData$Text = paste(newsData$Headline, newsData$Summary)
 
 ## missing categories
 ## misCat = subset(news, news$NewsDesk=="" | news$SectionName=="" | news$SubsectionName=="")

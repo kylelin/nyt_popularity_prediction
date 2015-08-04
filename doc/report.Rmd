@@ -1,0 +1,546 @@
+---
+title: "NYT Prediction Report"
+output: html_document
+---
+### Exploring Data 
+
+```{r results='hide', echo=FALSE}
+# library load
+libs = c("ggplot2", "tm", "randomForest", "caret","psych", "reshape", "ggdendro", "dplyr")
+lapply(libs, library, character.only=TRUE)
+
+# utility function load
+source('../util.R')
+
+# data load
+trainData = read.csv("../data/NYTimesBlogTrain.csv", stringsAsFactors=FALSE)
+testData  = read.csv("../data/NYTimesBlogTest.csv", stringsAsFactors=FALSE)
+testData$Popular = NA
+
+## combine training set and testing until finishing data transformation
+newsData = rbind(trainData, testData)
+```
+There are `r dim(newsData)[1]` observations in total, where `r dim(trainData)[1]` training 
+observations and `r dim(testData)[1]` observations.
+
+```{r}
+popularDensity <- table(newsData$Popular)
+posPopular <- round(popularDensity[2]/(popularDensity[1] + popularDensity[2]) * 100, 2)
+```
+Only `r posPopular`% 
+of all New York Times blog articles have more than 25 comments. That means, a baseline model for predicting unpopular would be around `r 100 - posPopular`%.
+
+The independent variables consist of 8 pieces of article data available at the time of publication, and a unique identifier:
+
+- **NewsDesk**, the New York Times desk that produced the story (Business, Culture, Foreign, etc.)
+- **SectionName**, the section the article appeared in (Opinion, Arts, Technology, etc.)
+- **SubsectionName**, the subsection the article appeared in (Education, Small Business, Room for Debate, etc.)
+- **Headline**, the title of the article
+- **Snippet**, a small portion of the article text
+- **Abstract**, a summary of the blog article, written by the New York Times
+- **WordCount**, the number of words in the article
+- **PubDate**, the publication date, in the format "Year-Month-Day Hour:Minute:Second"
+- **UniqueID**, a unique identifier for each article
+
+### Cleaning Data
+```{r results='hide', echo=FALSE}
+newsData$Summary = ifelse(nchar(cleanupText(newsData$Snippet)) > nchar(cleanupText(newsData$Abstract)),
+                      cleanupText(newsData$Snippet),
+                      cleanupText(newsData$Abstract))
+```
+##### Text of Articles
+Let's take a look at **Headline**, we can observe many very common combination of words like `new york times`, `pictures of the day` etc. If we google `pictures of the day new york times`, it is easy to know
+`pictures of the day` is a daily article from `Lens` category. 
+
+```{r eval=FALSE}
+newsData$Headline
+```
+To avoid overcounting of words like `day`, a replacement of some proper nouns to single word is necessary.
+```{r}
+originalText    = c("new york times", "new york city", "new york", "silicon valley", 
+                    "times insider", "fashion week", "white house", 
+                    "international herald tribune archive", 
+                    "president obama", "hong kong", "big data", "golden globe", 
+                    "word of the day", "time square", "pictures of the day",
+                    "photos of the day", "daily clip report")
+
+replacementText = c("NYT", "NYC", "NewYork", "SiliconValley", "TimesInsider",
+                    "FashionWeek", "WhiteHouse", "IHT", "Obama", "HongKong",
+                    "BigData", "GoldenGlobe", "WordofDay", "TimeSquare", "PicOfDay",
+                    "PicOfDay", "DailyClipReport")
+```
+
+```{r results='hide', echo=FALSE}
+newsData$Headline = phaseSub(newsData$Headline, originalText, replacementText, ignore.case=TRUE)
+newsData$Summary  = phaseSub(newsData$Summary,  originalText, replacementText, ignore.case=TRUE)
+
+rm(originalText)
+rm(replacementText)
+
+# combine Headline and Summary
+newsData$Text = paste(newsData$Headline, newsData$Summary)
+```
+
+##### Word Count of Articles
+
+```{r results='hide', echo=FALSE}
+newsData$HeadlineCharCount = nchar(newsData$Headline)
+newsData$SummaryCharCount  = nchar(newsData$Summary)
+# Use the regular expression symbol \\W to match non-word characters, using + to indicate one or more in a row, along with gregexpr to find all matches in a string. Words are the number of word separators plus 1.
+newsData$HeadlineWordCount = sapply(gregexpr("\\W+", 
+                                    gsub("[[:punct:]]", "", newsData$Headline)), 
+                                    length) + 1
+newsData$SummaryWordCount  = sapply(gregexpr("\\W+", 
+                                gsub("[[:punct:]]", "", newsData$Summary)),
+                                length) + 1
+
+newsData$Popular        = as.factor(newsData$Popular)
+newsData$LogWordCount   = log(1 + newsData$WordCount)
+
+### Distribution of LogWordCount
+newsTrain = head(newsData, nrow(trainData))
+newsTest  = tail(newsData, nrow(testData))
+
+newsData$ShortHeadline = as.factor(ifelse(newsData$HeadlineCharCount <= mean(newsData$HeadlineCharCount), 1, 0))
+```
+
+The following plot shows article's popularity distribution based on logarithmic word count.
+Beside training data, testing data's distribution is also plotted by gray color which is bimodal distribution.
+
+```{r results='hide', echo=FALSE, fig.height = 4, fig.width = 7, fig.align='center'}
+ggplot(newsData, aes(x=LogWordCount, fill=Popular)) + 
+  geom_density(aes(y=..scaled..), alpha=0.4) +
+  ggtitle("Distribution of Log WordCount") +
+  xlab("Log(WordCount)") +
+  theme(axis.title.y = element_blank())
+```
+
+
+If we conduct a two-sided t-test on the mean and a two-sided F-test on the variance:
+
+```{r}
+PopularNewsTrain   = subset(newsTrain, newsTrain$Popular==1)
+UnpopularNewsTrain = subset(newsTrain, newsTrain$Popular==0)
+ 
+t.test(PopularNewsTrain$LogWordCount, UnpopularNewsTrain$LogWordCount)
+var.test(PopularNewsTrain$LogWordCount, UnpopularNewsTrain$LogWordCount)
+```
+
+This shows us there is a statistically significant difference between popular and 
+unpopular articles based on the word counts. At the same time, popular article seems having 
+shorter `Headline`.
+
+```{r results='hide', echo=FALSE, fig.height = 4, fig.width = 7, fig.align='center'}
+ggplot(newsData, aes(x=HeadlineCharCount, fill=Popular)) + 
+  geom_density(aes(y=..scaled..), alpha=0.4) +
+  ggtitle("Distribution of HeadlineCharCount") +
+  xlab("# Characters in Headline") +
+  theme(axis.title.y = element_blank())
+```
+
+```{r}
+t.test(PopularNewsTrain$HeadlineCharCount, UnpopularNewsTrain$HeadlineCharCount)
+```
+
+##### Publishing Hour and Day
+It is unlikely that many article receiving 25 more comments in the middle of night. 
+Hence, at certain times during the day, we expect the probability that a random article 
+becomes popular to be larger. Similarly, the day of the week may have an impact, people
+may have much more time to read articles than a working day.
+
+```{r results='hide'}
+## date feature
+newsData$PubDate = strptime(newsData$PubDate, "%Y-%m-%d %H:%M:%S")
+newsData$PubDay  = as.Date(newsData$PubDate)
+## it is expected that different behaviours at different times of the day.publication
+newsData$DayofWeek = newsData$PubDate$wday
+newsData$Hour    = newsData$PubDate$hour
+newsData$DayOfWeek = as.factor(weekdays(newsData$PubDate))
+newsData$DayOfWeek = factor(newsData$DayOfWeek, levels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+## especially on holidays, people may have much more time to read and comment on blog articles
+Holidays = c(as.POSIXlt("2014-09-01 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-10-13 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-10-31 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-11-11 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-11-27 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-12-24 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-12-25 00:00", format="%Y-%m-%d %H:%M"),
+             as.POSIXlt("2014-12-31 00:00", format="%Y-%m-%d %H:%M"))
+ 
+newsData$Holiday = as.factor(ifelse(newsData$PubDate$yday %in% Holidays$yday, 1, 0))
+```
+
+```{r results='hide', echo=FALSE}
+newsData$PopularFactor = as.numeric(as.character(newsData$Popular))
+newsData$PopularFactor[which(is.na(newsData$Popular))] = "N/A"
+newsData$PopularFactor = as.factor(newsData$PopularFactor)
+```
+
+```{r echo=FALSE, fig.height = 4, fig.width = 7, fig.align = 'center'}
+hourMatrix = as.matrix(table(newsData$Hour, newsData$Popular))
+hourMatrix = data.frame("Unpopular" = hourMatrix[, 1], 
+                        "Popular" = hourMatrix[, 2], 
+                        "PopularDensity" = hourMatrix[, 2]/(hourMatrix[, 1] + hourMatrix[, 2]))
+hourMatrix$Hour = 0:23
+hourMatrix[order(hourMatrix$PopularDensity),]
+```
+
+It seems that publishing blog posts around `10 pm` are more easier getting popular 
+according to `PopularDensity`. But, if we compare number of popular articles of 24 hours, 
+It is clear to see that around `12 pm` and `3 pm`, even more blog posts receiving 25 more comments
+than `10 pm`.
+
+```{r echo=FALSE, fig.height = 4, fig.width = 7, fig.align = 'center'}
+ggplot(hourMatrix, aes(x=Hour)) + 
+  geom_line(aes(y=PopularDensity, color = 'PopularDensity')) +
+  geom_line(aes(y=Popular/max(hourMatrix$Popular), color = 'Popular(scaled)')) +
+  geom_line(aes(y=Unpopular/max(hourMatrix$Unpopular), color = 'Unpopular(scaled)')) + 
+  ggtitle("Distribution of Hourly PopularDensity") +
+  xlab("Hour of Day") +
+  theme(axis.title.y = element_blank())
+```
+
+```{r echo=FALSE}
+dayMatrix = as.matrix(table(newsData$DayOfWeek, newsData$Popular))
+dayMatrix = data.frame("Unpopular" = dayMatrix[, 1], 
+                        "Popular" = dayMatrix[, 2], 
+                        "PopularDensity" = dayMatrix[, 2]/(dayMatrix[, 1] + dayMatrix[, 2]))
+dayMatrix$Day = 1:7
+dayMatrix[order(dayMatrix$PopularDensity),]
+```
+Similarly, day of week shows same trends as hourly results. Also, much more articles are published on
+weekday than weekends.
+```{r echo=FALSE, fig.height = 4, fig.width = 7, fig.align = 'center'}
+ggplot(dayMatrix, aes(x=Day)) + 
+  geom_line(aes(y=PopularDensity, color = 'PopularDensity')) +
+  geom_line(aes(y=Popular/max(dayMatrix$Popular), color = 'Popular(scaled)')) +
+  geom_line(aes(y=Unpopular/max(dayMatrix$Unpopular), color = 'Unpopular(scaled)')) + 
+  ggtitle("Distribution of Day PopularDensity") +
+  xlab("Day of Week") + scale_y_continuous(limits = c(0,1)) +
+  theme(axis.title.y = element_blank())
+```
+
+##### Category of Articles
+There are three variables categorizes blog posts, `NewsDesk` `SectionName` and `SubsectionName`.
+
+```{r}
+## missing categories
+misCategory = subset(newsData, newsData$NewsDesk=="" | newsData$SectionName=="" | newsData$SubsectionName=="")
+dim(misCategory)[1]
+misCategory = subset(newsData, newsData$NewsDesk=="" & newsData$SectionName=="" & newsData$SubsectionName=="")
+dim(misCategory)[1]
+```
+**6721** articles have at one category variable missing and **1626** articles have no categories at all.
+After filling blank categories based on existing category variables, let's try to see the facet 
+distribution of blog posts.
+
+```{r results='hide', echo=FALSE}
+rm(misCategory)
+
+categoryMap = as.data.frame(table(newsData$NewsDesk, newsData$SectionName, newsData$SubsectionName))
+names(categoryMap) = c("NewsDesk", "SectionName", "SubsectionName", "Freq")
+categoryMap = subset(categoryMap, Freq > 0)
+#categoryMap[order(categoryMap$SectionName),]
+## fill NewsDesk by most common SectionName
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Arts", "Culture", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Business Day", "Business", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Health", "Science", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Multimedia", "", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="N.Y. / Region", "Metro", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Open", "Technology", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Opinion", "OpEd", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Technology", "Business", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="Travel", "Travel", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="U.S.", "National", newsData$NewsDesk)
+newsData$NewsDesk = ifelse(newsData$NewsDesk=="" & newsData$SectionName=="World", "Foreign", newsData$NewsDesk)
+
+## fix Crosswords
+idx = which(newsData$SectionName=="Crosswords/Games")
+newsData$NewsDesk[idx]       = "Styles"
+newsData$SectionName[idx]    = "Puzzles"
+newsData$SubsectionName[idx] = ""
+## fix U.S.
+idx = which(newsData$NewsDesk=="Styles" & newsData$SectionName=="U.S.")
+newsData$NewsDesk[idx]       = "Styles"
+newsData$SectionName[idx]    = "Style"
+newsData$SubsectionName[idx] = ""
+
+#categoryMap[order(categoryMap$NewsDesk),]
+## fill SectionName by most common NewsDesk
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="Culture", "Arts", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="Foreign", "World", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="National", "U.S.", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="OpEd", "Opinion", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="Science", "Science", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="Sports", "Sports", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="Styles", "Style", newsData$SectionName)
+newsData$SectionName = ifelse(newsData$SectionName=="" & newsData$NewsDesk=="TStyle", "Magazine", newsData$SectionName)
+
+## fill all empty ( NewsDesk, SectionName, SubsectionName ) cases
+idx = which(newsData$NewsDesk == "" & newsData$SectionName == "" & newsData$SubsectionName == "" &
+              grepl("^(first draft|lunchtime laughs|politics helpline|today in politics|verbatim)",
+                    newsData$Headline, ignore.case=TRUE))
+newsData$NewsDesk[idx]       = "National"
+newsData$SectionName[idx]    = "U.S."
+newsData$SubsectionName[idx] = "Politics"
+
+## fill empty SectionName based on political terms
+idx = which(newsData$SectionName=="" &
+              grepl(paste0("white house|democrat|republican|tea party|",
+                           "obama|biden|boehner|kerry|capitol|senat|",
+                           "sen\\.|congress|president|washington|politic|",
+                           "rubio|palin|clinton|bush|limbaugh|rand paul|",
+                           "christie|mccain|election|poll|cruz|constitution|",
+                           "amendment|federal|partisan|yellen|govern|",
+                           "gov\\.|legislat|supreme court|campaign|",
+                           "primary|primaries|justice|jury"),
+                    newsData$Text, ignore.case=TRUE))
+newsData$NewsDesk[idx]       = "National"
+newsData$SectionName[idx]    = "U.S."
+newsData$SubsectionName[idx] = "Politics"
+
+newsData$NewsDesk[which(newsData$NewsDesk=="")]             = "Missing"
+newsData$SectionName[which(newsData$SectionName=="")]       = "Missing"
+newsData$SubsectionName[which(newsData$SubsectionName=="")] = "Missing"
+
+rm(idx)
+
+## PubDay vs popular
+DailyArticles        = as.data.frame(table(newsData$PubDay))
+names(DailyArticles) = c("PubDay", "NumDailyArticles")
+DailyArticles$PubDay = as.Date(as.character(DailyArticles$PubDay), format="%Y-%m-%d")
+newsData             = merge(newsData, DailyArticles, by = "PubDay", all.x=TRUE)
+
+## PubDay per section vs popular
+DailySectionArticles        = as.data.frame(table(newsData$PubDay, newsData$SectionName))
+names(DailySectionArticles) = c("PubDay", "SectionName", "NumDailySectionArticles")
+DailySectionArticles$PubDay = as.Date(as.character(DailySectionArticles$PubDay), format="%Y-%m-%d")
+newsData                    = merge(newsData, DailySectionArticles, all.x=TRUE)
+
+## hourly published vs popular
+HourlyArticles        = as.data.frame(table(newsData$PubDay, newsData$Hour))
+names(HourlyArticles) = c("PubDay", "Hour", "NumHourlyArticles")
+HourlyArticles$PubDay = as.Date(as.character(HourlyArticles$PubDay), format="%Y-%m-%d")
+newsData              = merge(newsData, HourlyArticles, all.x=TRUE)
+
+```
+
+```{r echo=FALSE, fig.height = 7, fig.width = 10, fig.align = 'center'}
+newsTrain = head(newsData, nrow(trainData))
+newsTest  = tail(newsData, nrow(testData))
+
+#ggplot(newsTrain, aes(x=NumDailyArticles, fill=PopularFactor)) + 
+#  geom_density(aes(y=..scaled..), alpha=0.4) +
+#  ggtitle("Distribution of NumDailyArticles") +
+#  xlab("# Daily Articles Published") +
+#  scale_fill_discrete(name="Popular") +
+#  theme(axis.title.y = element_blank())
+
+ggplot(newsTrain, aes(x=NumDailySectionArticles, fill=PopularFactor)) +
+  geom_density(aes(y=..scaled..), alpha=0.4) +
+  ggtitle("Distribution of NumDailySectionArticles") +
+  xlab("# Daily Articles Published facet by Section") +
+  scale_fill_discrete(name="Popular") +
+  theme(axis.title.y = element_blank()) + 
+  facet_wrap( ~ SectionName, ncol=3)
+```
+
+Although it is hard to see what's going on, a clear difference between popular and unpopular 
+articles is in the section Magazine, where around 15 articles posted per day is more 
+indicative of popular articles than unpopular ones. Beyond 20 posts per day the roles are 
+clearly reversed. Hourly distribution of the following plot also shows no clear indication
+of popularity.
+
+```{r echo=FALSE, fig.height = 4, fig.width = 10, fig.align = 'center'}
+ggplot(newsTrain, aes(x=NumHourlyArticles, fill=PopularFactor)) +
+  geom_density(aes(y=..scaled..), alpha=0.4) +
+  ggtitle("Distribution of NumHourlyArticles") +
+  xlab("# Hourly Articles Published") +
+  scale_fill_discrete(name="Popular") +
+  theme(axis.title.y = element_blank()) + 
+  facet_wrap( ~ Hour, ncol=8)
+```
+
+##### Contents Features of Articles
+Until now, we preprocessed date features, word counts and categories of article. Almost all features
+from original data frame but the contents of blog post.
+
+
+```{r}
+stopWords = c(stopwords("SMART"))
+CorpusText = Corpus(VectorSource(newsData$Text))
+CorpusText = tm_map(CorpusText, tolower)
+CorpusText = tm_map(CorpusText, PlainTextDocument)
+CorpusText = tm_map(CorpusText, removePunctuation)
+CorpusText = tm_map(CorpusText, removeWords, stopWords)
+CorpusText = tm_map(CorpusText, stemDocument, language="english")
+
+tdmText = TermDocumentMatrix(CorpusText)
+sparseText = removeSparseTerms(tdmText, 0.98)
+sparseText = as.data.frame(as.matrix(sparseText))
+colnames(sparseText) = make.names(colnames(sparseText))
+
+dtmText = DocumentTermMatrix(CorpusText)
+freqTerms = findFreqTerms(dtmText, lowfreq=10)
+termFreq  = colSums(as.matrix(dtmText))
+termFreq  = subset(termFreq, termFreq>=200)
+df        = data.frame(term=names(termFreq), freq=termFreq)
+
+newsDataNoBagWords = newsData
+
+tSparseText = t(sparseText)
+colnames(tSparseText) = make.names(paste('c',colnames(tSparseText)))
+newsData[, colnames(tSparseText)] = tSparseText
+```
+
+```{r fig.height = 7, fig.width = 7, fig.align = 'center'}
+ggplot(df, aes(x=reorder(term, freq, max), y=freq)) +
+  geom_bar(stat="identity") +
+  ggtitle("Most Common Terms in the Summary") +
+  xlab("Terms") +
+  ylab("Frequency") +
+  coord_flip()
+```
+
+### Modeling Data
+```{r results='hide', echo=FALSE}
+newsData$PubDate <- NULL
+newsTrain = head(newsData, nrow(trainData))
+newsTest  = tail(newsData, nrow(testData))
+```
+
+##### Logistic Regression without contents feature
+```{r}
+lrModel = glm(Popular ~ PubDay + Hour +  
+                        WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
+                        HeadlineWordCount + SummaryWordCount + LogWordCount + 
+                        NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
+                        ShortHeadline + Holiday,
+              data=newsTrain, family=binomial)
+calcAUClr(lrModel, newsTrain$Popular)
+lrModelPred = predict(lrModel, newdata=newsTest, type="response")
+generateSubmission(lrModelPred)
+```
+
+##### Random Forest with contents feature
+```{r}
+# modeling
+## random forest
+rfModel = randomForest(Popular ~ PubDay + Hour +  
+                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
+                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
+                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
+                                 ShortHeadline + Holiday,
+                      data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
+
+trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrain[trainPartition, ]
+rfModel.tuned  = train(Popular ~ PubDay + Hour +  
+                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
+                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
+                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
+                                 ShortHeadline + Holiday,
+                      data=tuneTrain, 
+                      method="rf", 
+                      trControl=trainControl(method="cv", number=5))
+calcAUC(rfModel, newsTrain$Popular)
+rfModelPred = predict(rfModel, newdata=newsTest, type="prob")[,2]
+generateSubmission(rfModelPred)
+```
+
+##### Logistic Regression 
+```{r}
+removedColumns = c("SectionName", "NewsDesk", "SubsectionName", "Headline", "Snippet", "Abstract", "Summary", "UniqueID", "Text", "PopularFactor")
+lrModelText = glm(Popular ~ ., data=newsTrain[,!colnames(newsTrain) %in% removedColumns], family=binomial)
+
+calcAUClr(lrModelText, newsTrain$Popular)
+lrModelTextPred = predict(lrModelText, newdata=newsTest, type="response")
+generateSubmission(lrModelTextPred)
+```
+
+##### Random Forest
+```{r}
+newsTrain = na.omit(newsTrain)
+rfModelText = randomForest(Popular ~ . -SectionName 
+                                       -NewsDesk 
+                                       -SubsectionName 
+                                       -Headline 
+                                       -Snippet 
+                                       -Abstract 
+                                       -Summary 
+                                       -UniqueID 
+                                       -Text, 
+                           data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
+
+trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrain[trainPartition, ]
+rfModelText.tuned  = train(Popular ~ . -SectionName 
+                                       -NewsDesk 
+                                       -SubsectionName 
+                                       -Headline 
+                                       -Snippet 
+                                       -Abstract 
+                                       -Summary 
+                                       -UniqueID 
+                                       -Text,
+                          data=tuneTrain, 
+                          method="rf", 
+                          trControl=trainControl(method="cv", number=5))
+calcAUC(rfModelText, newsTrain$Popular)
+rfModelTextPred = predict(rfModelText, newdata=newsTest, type="prob")[,2]
+generateSubmission(rfModelTextPred)
+```
+##### Supervised + Unsupervised 
+```{r}
+matrixSparseText  = as.matrix(sparseText)
+matrixSparseText.distMatrix = dist(scale(matrixSparseText))
+matrixSparseText.clusters   = hclust(matrixSparseText.distMatrix, method="ward.D2")
+
+dText = as.dendrogram(matrixSparseText.clusters)
+dTextData <- dendro_data(dText, type = "rectangle")
+
+ggplot(segment(dTextData)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  coord_flip() 
+
+kText   = 25
+mText   = t(sparseText)
+KMCText = kmeans(mText, kText)
+ 
+for (i in 1:kText) {
+  cat(paste("cluster ", i, ": ", sep=","))
+  s = sort(KMCText$centers[i, ], decreasing=TRUE)
+  cat(names(s)[1:15], sep=", ", "\n")
+}
+
+newsData$TextCluster     = as.factor(KMCText$cluster)
+newsDataNoBagWords$PubDate = NULL
+newsDataNoBagWords$TextCluster = newsData$TextCluster
+newsTrain = head(newsDataNoBagWords, nrow(trainData))
+newsTest  = tail(newsDataNoBagWords, nrow(testData))
+```
+
+```{r}
+rfModelMix = randomForest(Popular ~ PubDay + Hour + TextCluster +
+                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
+                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
+                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
+                                 ShortHeadline + Holiday,
+                           data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
+
+trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrain[trainPartition, ]
+rfModelMix.tuned  = train(Popular ~ PubDay + Hour + TextCluster +
+                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
+                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
+                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
+                                 ShortHeadline + Holiday,
+                          data=tuneTrain, 
+                          method="rf", 
+                          trControl=trainControl(method="cv", number=5))
+calcAUC(rfModelMix, newsTrain$Popular)
+
+rfModelMixPred = predict(rfModelMix, newdata=newsTest, type="prob")[,2]
+generateSubmission(rfModelMixPred)
+```

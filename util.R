@@ -74,12 +74,23 @@ calcAUC <- function(model, truth)
   return(c(model.accu, model.auc))
 }
 
+calcAUClr <- function(model, truth)
+{
+  suppressPackageStartupMessages(require(ROCR))
+
+  model.pred = predict(model, type="response")
+  model.accu = tr(table(truth, model.pred > 0.5))/length(model.pred)
+  model.auc  = as.numeric(performance(prediction(model.pred, truth), "auc")@y.values)
+
+  return(c(model.accu, model.auc))
+}
+
 # N-Gram tokenizer for mono-, bi-, and tri-grams
 NGTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 3))
 
 # Prepare a CSV file with predictions for submission
 generateSubmission <- function(predictions) {
-  fileName = paste0("Submission_", deparse(substitute(predictions)), ".csv")
-  submission = data.frame(UniqueID = NewsTest$UniqueID, Probability1 = predictions)
+  fileName = paste0("../submit/Submission_", deparse(substitute(predictions)), ".csv")
+  submission = data.frame(UniqueID = newsTest$UniqueID, Probability1 = predictions)
   write.csv(submission, fileName, row.names=FALSE)
 }
