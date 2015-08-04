@@ -41,4 +41,4 @@ Please have a look at [Report].
 [NYTimesBlogTest]:data/NYTimesBlogTest.csv
 [NYTimesBlogTrain]:data/NYTimesBlogTrain.csv
 [New York Times'blog directory]:http://www.nytimes.com/interactive/blogs/directory.html
-[Report]:doc/report.html
+[Report]:doc/report.pdf

@@ -8,4 +8,5 @@ libs = c("rmarkdown")
 lapply(libs, library, character.only=TRUE)
 
 # generating report
-render("doc/report.Rmd")
+render("doc/report.Rmd", html_document())
+render("doc/report.Rmd", pdf_document())
