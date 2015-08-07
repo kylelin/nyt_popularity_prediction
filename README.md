@@ -34,11 +34,12 @@ The independent variables consist of 8 pieces of article data available at the t
 
 
 ### Report
-Please have a look at [Report]. 
+Please have a look at [report] and [source code].
 
 
 [NYT_bits]:doc/imgs/NYT_bits.png
 [NYTimesBlogTest]:data/NYTimesBlogTest.csv
 [NYTimesBlogTrain]:data/NYTimesBlogTrain.csv
 [New York Times'blog directory]:http://www.nytimes.com/interactive/blogs/directory.html
-[Report]:doc/report.pdf
+[report]:doc/report.pdf
+[source code]:doc/report.Rmd

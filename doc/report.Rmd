@@ -5,10 +5,12 @@ output: html_document
 ### Exploring Data 
 
 ```{r results='hide', echo=FALSE}
+options(warn = 2, error = recover)
+
 # library load
 libs = c("ggplot2", "tm", "randomForest", "caret","psych", "reshape", "ggdendro", "dplyr")
 lapply(libs, library, character.only=TRUE)
-
+submitPath = "../submit/"
 # utility function load
 source('../util.R')
 
@@ -62,12 +64,13 @@ originalText    = c("new york times", "new york city", "new york", "silicon vall
                     "international herald tribune archive", 
                     "president obama", "hong kong", "big data", "golden globe", 
                     "word of the day", "time square", "pictures of the day",
-                    "photos of the day", "daily clip report")
+                    "photos of the day", "daily clip report", "daily report", 
+                    "6 q's about the news", "test yourself")
 
 replacementText = c("NYT", "NYC", "NewYork", "SiliconValley", "TimesInsider",
                     "FashionWeek", "WhiteHouse", "IHT", "Obama", "HongKong",
                     "BigData", "GoldenGlobe", "WordofDay", "TimeSquare", "PicOfDay",
-                    "PicOfDay", "DailyClipReport")
+                    "PicOfDay", "DailyClipReport", "DailyReport", "6q", "TestYourself")
 ```
 
 ```{r results='hide', echo=FALSE}
@@ -140,6 +143,11 @@ ggplot(newsData, aes(x=HeadlineCharCount, fill=Popular)) +
 
 ```{r}
 t.test(PopularNewsTrain$HeadlineCharCount, UnpopularNewsTrain$HeadlineCharCount)
+```
+
+```{r results='hide', echo=FALSE}
+rm(PopularNewsTrain)
+rm(UnpopularNewsTrain)
 ```
 
 ##### Publishing Hour and Day
@@ -304,6 +312,10 @@ newsData$NewsDesk[which(newsData$NewsDesk=="")]             = "Missing"
 newsData$SectionName[which(newsData$SectionName=="")]       = "Missing"
 newsData$SubsectionName[which(newsData$SubsectionName=="")] = "Missing"
 
+newsData$SectionNameFactor <- as.factor(newsData$SectionName)
+newsData$NewsDeskFactor <- as.factor(newsData$NewsDesk)
+newsData$SubsectionNameFactor <- as.factor(newsData$SubsectionName)
+
 rm(idx)
 
 ## PubDay vs popular
@@ -369,7 +381,7 @@ from original data frame but the contents of blog post.
 
 ```{r}
 stopWords = c(stopwords("SMART"))
-CorpusText = Corpus(VectorSource(newsData$Text))
+CorpusText = Corpus(VectorSource(newsData$Headline))
 CorpusText = tm_map(CorpusText, tolower)
 CorpusText = tm_map(CorpusText, PlainTextDocument)
 CorpusText = tm_map(CorpusText, removePunctuation)
@@ -377,27 +389,30 @@ CorpusText = tm_map(CorpusText, removeWords, stopWords)
 CorpusText = tm_map(CorpusText, stemDocument, language="english")
 
 tdmText = TermDocumentMatrix(CorpusText)
-sparseText = removeSparseTerms(tdmText, 0.98)
+# around 20 words
+sparseText = removeSparseTerms(tdmText, 0.989)
 sparseText = as.data.frame(as.matrix(sparseText))
 colnames(sparseText) = make.names(colnames(sparseText))
 
 dtmText = DocumentTermMatrix(CorpusText)
 freqTerms = findFreqTerms(dtmText, lowfreq=10)
 termFreq  = colSums(as.matrix(dtmText))
-termFreq  = subset(termFreq, termFreq>=200)
+termFreq  = subset(termFreq, termFreq>=100)
 df        = data.frame(term=names(termFreq), freq=termFreq)
 
-newsDataNoBagWords = newsData
+## Bag of Words
+newsDataBoW = newsData
+newsDataBoW$PubDate = NULL
 
 tSparseText = t(sparseText)
-colnames(tSparseText) = make.names(paste('c',colnames(tSparseText)))
-newsData[, colnames(tSparseText)] = tSparseText
+colnames(tSparseText) = make.names(paste('c',colnames(tSparseText),sep="_"))
+newsDataBoW[, colnames(tSparseText)] = tSparseText
 ```
 
-```{r fig.height = 7, fig.width = 7, fig.align = 'center'}
+```{r fig.height = 7, fig.width = 7, fig.align = 'center', echo=FALSE}
 ggplot(df, aes(x=reorder(term, freq, max), y=freq)) +
   geom_bar(stat="identity") +
-  ggtitle("Most Common Terms in the Summary") +
+  ggtitle("Most Common Terms in the Headline") +
   xlab("Terms") +
   ylab("Frequency") +
   coord_flip()
@@ -412,87 +427,101 @@ newsTest  = tail(newsData, nrow(testData))
 
 ##### Logistic Regression without contents feature
 ```{r}
-lrModel = glm(Popular ~ PubDay + Hour +  
-                        WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
-                        HeadlineWordCount + SummaryWordCount + LogWordCount + 
-                        NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
-                        ShortHeadline + Holiday,
-              data=newsTrain, family=binomial)
-calcAUClr(lrModel, newsTrain$Popular)
-lrModelPred = predict(lrModel, newdata=newsTest, type="response")
-generateSubmission(lrModelPred)
-```
-
-##### Random Forest with contents feature
-```{r}
-# modeling
-## random forest
-rfModel = randomForest(Popular ~ PubDay + Hour +  
-                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
-                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
-                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
-                                 ShortHeadline + Holiday,
-                      data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
-
-trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
-tuneTrain      = newsTrain[trainPartition, ]
-rfModel.tuned  = train(Popular ~ PubDay + Hour +  
-                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
-                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
-                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
-                                 ShortHeadline + Holiday,
-                      data=tuneTrain, 
-                      method="rf", 
-                      trControl=trainControl(method="cv", number=5))
-calcAUC(rfModel, newsTrain$Popular)
-rfModelPred = predict(rfModel, newdata=newsTest, type="prob")[,2]
-generateSubmission(rfModelPred)
-```
-
-##### Logistic Regression 
-```{r}
+# MODEL--0
+# LR_0
+# finding importance of features
 removedColumns = c("SectionName", "NewsDesk", "SubsectionName", "Headline", "Snippet", "Abstract", "Summary", "UniqueID", "Text", "PopularFactor")
-lrModelText = glm(Popular ~ ., data=newsTrain[,!colnames(newsTrain) %in% removedColumns], family=binomial)
+LR_0 = glm(Popular ~ ., data=newsTrain[,!colnames(newsTrain) %in% removedColumns], family=binomial)
 
-calcAUClr(lrModelText, newsTrain$Popular)
-lrModelTextPred = predict(lrModelText, newdata=newsTest, type="response")
-generateSubmission(lrModelTextPred)
+calcAUClr(LR_0, newsTrain$Popular)
+# training result: 0.9315814
+LR_0_Pred = predict(LR_0, newdata=newsTest[, !colnames(newsTrain) %in% removedColumns], type="response")
+generateSubmission(LR_0_Pred, submitPath)
+# testing  result: 0.89088
+
+summary(LR_0)
+```
+By using `summary(Model)`, we can select the following variables based on importance of variables.
+```{r}
+selectedColumns = c("Popular", 
+                    "PubDay", 
+                    "Hour", 
+                    "LogWordCount", 
+                    "SummaryCharCount", 
+                    "HeadlineWordCount", 
+                    "WordCount", 
+                    "SummaryCharCount", 
+                    "HeadlineCharCount", 
+                    "SectionNameFactor", 
+                    "SubsectionNameFactor", 
+                    "NumDailySectionArticles", 
+                    "NumHourlyArticles")
+```
+###### MODEL-1 (logistic regression)
+```{r results='hide'}
+LR_1 = glm(Popular ~ ., data=newsTrain[, colnames(newsTrain) %in% selectedColumns], family=binomial)
+
+calcAUClr(LR_1, newsTrain$Popular)
+# training result: 0.9297705
+
+LR_1_Pred = predict(LR_1, newdata=newsTest[, colnames(newsTrain) %in% selectedColumns], type="response")
+generateSubmission(LR_1_Pred, submitPath)
+# testing  result: 0.89212 
 ```
 
-##### Random Forest
-```{r}
-newsTrain = na.omit(newsTrain)
-rfModelText = randomForest(Popular ~ . -SectionName 
-                                       -NewsDesk 
-                                       -SubsectionName 
-                                       -Headline 
-                                       -Snippet 
-                                       -Abstract 
-                                       -Summary 
-                                       -UniqueID 
-                                       -Text, 
-                           data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
+###### MODEL-2 (random forest) 
+```{r results='hide'}
+RF_2 = randomForest(Popular ~ ., data=newsTrain[, colnames(newsTrain) %in% selectedColumns], nodesize=1, ntree=2500, importance=TRUE)
 
 trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
-tuneTrain      = newsTrain[trainPartition, ]
-rfModelText.tuned  = train(Popular ~ . -SectionName 
-                                       -NewsDesk 
-                                       -SubsectionName 
-                                       -Headline 
-                                       -Snippet 
-                                       -Abstract 
-                                       -Summary 
-                                       -UniqueID 
-                                       -Text,
-                          data=tuneTrain, 
-                          method="rf", 
-                          trControl=trainControl(method="cv", number=5))
-calcAUC(rfModelText, newsTrain$Popular)
-rfModelTextPred = predict(rfModelText, newdata=newsTest, type="prob")[,2]
-generateSubmission(rfModelTextPred)
+tuneTrain      = newsTrain[trainPartition, colnames(newsTrain) %in% selectedColumns]
+RF_2.tuned  = train(Popular ~ ., data=tuneTrain, method="rf", trControl=trainControl(method="cv", number=5))
+
+calcAUC(RF_2, newsTrain$Popular)
+# training result: 0.9387521
+
+RF_2_Pred = predict(RF_2, newdata=newsTest, type="prob")[,2]
+generateSubmission(RF_2_Pred, submitPath)
+# testing  result: 0.89470
 ```
+
+###### MODEL-3 (logistic regression on Bag of Words)
+```{r results='hide', echo=FALSE}
+newsDataBoW$PubDate <- NULL
+newsTrainBoW = head(newsDataBoW, nrow(trainData))
+newsTestBoW  = tail(newsDataBoW, nrow(testData))
+```
+
+```{r results='hide'} 
+LR_3 = glm(Popular ~ ., data=newsTrainBoW[,!colnames(newsTrainBoW) %in% removedColumns], family=binomial)
+
+calcAUClr(LR_3, newsTrainBoW$Popular)
+# training result: 0.9389116
+
+LR_3_Pred = predict(LR_3, newdata=newsTestBoW, type="response")
+generateSubmission(LR_3_Pred, submitPath)
+# testing  result: 0.90176
+```
+
+###### MODEL-4 (random forest on Bag of Words)
+```{r results='hide'}
+RF_4 = randomForest(Popular ~ ., data=newsTrainBoW[,!colnames(newsTrainBoW) %in% removedColumns], nodesize=5, ntree=2500, importance=TRUE)
+
+trainPartition = createDataPartition(y=newsTrainBoW$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrainBoW[trainPartition,!colnames(newsTrainBoW) %in% removedColumns]
+RF_4.tuned  = train(Popular ~ ., data=tuneTrain, method="rf", trControl=trainControl(method="cv", number=5))
+
+calcAUC(RF_4, newsTrainBoW$Popular)
+# training result: 0.9399500
+
+RF_4_Pred = predict(RF_4, newdata=newsTestBoW, type="prob")[,2]
+generateSubmission(RF_4_Pred, submitPath)
+# testing  result: 0.90048
+
+```
+
 ##### Supervised + Unsupervised 
-```{r}
+```{r results='hide'}
 matrixSparseText  = as.matrix(sparseText)
 matrixSparseText.distMatrix = dist(scale(matrixSparseText))
 matrixSparseText.clusters   = hclust(matrixSparseText.distMatrix, method="ward.D2")
@@ -501,46 +530,184 @@ dText = as.dendrogram(matrixSparseText.clusters)
 dTextData <- dendro_data(dText, type = "rectangle")
 
 ggplot(segment(dTextData)) + 
-  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
-  coord_flip() 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + coord_flip() 
 
 kText   = 25
 mText   = t(sparseText)
 KMCText = kmeans(mText, kText)
  
 for (i in 1:kText) {
-  cat(paste("cluster ", i, ": ", sep=","))
+  cat(paste("cluster", i, ": ", sep=" "))
   s = sort(KMCText$centers[i, ], decreasing=TRUE)
   cat(names(s)[1:15], sep=", ", "\n")
 }
 
 newsData$TextCluster     = as.factor(KMCText$cluster)
-newsDataNoBagWords$PubDate = NULL
-newsDataNoBagWords$TextCluster = newsData$TextCluster
-newsTrain = head(newsDataNoBagWords, nrow(trainData))
-newsTest  = tail(newsDataNoBagWords, nrow(testData))
+newsData$PubDate = NULL
+newsTrain = head(newsData, nrow(trainData))
+newsTest  = tail(newsData, nrow(testData))
 ```
-
-```{r}
-rfModelMix = randomForest(Popular ~ PubDay + Hour + TextCluster +
-                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
-                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
-                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
-                                 ShortHeadline + Holiday,
-                           data=newsTrain, nodesize=5, ntree=1000, importance=TRUE)
+###### MODEL-5 (random forest on text cluster)
+```{r results='hide'}
+selectedColumns = cbind(selectedColumns, c("TextCluster"))
+RF_5 = randomForest(Popular ~ ., data=newsTrain[, colnames(newsTrain) %in% selectedColumns], nodesize=5, ntree=2500, importance=TRUE)
 
 trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
-tuneTrain      = newsTrain[trainPartition, ]
-rfModelMix.tuned  = train(Popular ~ PubDay + Hour + TextCluster +
-                                 WordCount + DayofWeek + HeadlineCharCount + SummaryCharCount + 
-                                 HeadlineWordCount + SummaryWordCount + LogWordCount + 
-                                 NumDailyArticles + NumDailySectionArticles + NumHourlyArticles + 
-                                 ShortHeadline + Holiday,
-                          data=tuneTrain, 
-                          method="rf", 
-                          trControl=trainControl(method="cv", number=5))
-calcAUC(rfModelMix, newsTrain$Popular)
+tuneTrain      = newsTrain[trainPartition, colnames(newsTrain) %in% selectedColumns]
+RF_5.tuned  = train(Popular ~ ., data=tuneTrain, method="rf", trControl=trainControl(method="cv", number=5))
 
-rfModelMixPred = predict(rfModelMix, newdata=newsTest, type="prob")[,2]
-generateSubmission(rfModelMixPred)
+calcAUC(RF_5, newsTrain$Popular)
+# training result: 0.9399861 
+
+RF_5_Pred = predict(RF_5, newdata=newsTest, type="prob")[,2]
+generateSubmission(RF_5_Pred, submitPath)
+# testing  result: 0.89854 
 ```
+
+##### Features of negative example
+```{r results='hide'}
+newsData$QAboutNews = as.factor(ifelse(grepl("6q", newsData$Text) == TRUE, 1, 0))
+newsData$DailyClip = as.factor(ifelse(grepl("DailyClipReport", newsData$Text) == TRUE, 1, 0))
+newsData$DailyReport = as.factor(ifelse(grepl("DailyReport", newsData$Text) == TRUE, 1, 0))
+newsData$PicOfDay = as.factor(ifelse(grepl("PicOfDay", newsData$Text) == TRUE, 1, 0))
+newsData$TestYourself = as.factor(ifelse(grepl("TestYourself", newsData$Text) == TRUE, 1, 0))
+newsData$WordofDay = as.factor(ifelse(grepl("WordofDay", newsData$Text) == TRUE, 1, 0))
+newsData$Recap = as.factor(ifelse(grepl("recap", newsData$Text) == TRUE, 1, 0))
+
+newsTrain = head(newsData, nrow(trainData))
+newsTest  = tail(newsData, nrow(testData))
+```
+
+###### MODEL-6 (logistic regression with negative example features)
+```{r eval=FALSE}
+selectedColumns = cbind(selectedColumns, c("QAboutNews", "DailyClip", "DailyReport", "PicOfDay", "TestYourself", "WordofDay", "Recap"))
+
+LR_6 = glm(Popular ~ ., data=newsTrain[, colnames(newsTrain) %in% selectedColumns], family=binomial)
+calcAUClr(LR_6, newsTrain$Popular)
+
+LR_6_Pred = predict(LR_6, newdata=newsTest[, colnames(newsTest) %in% selectedColumns], type="response")
+generateSubmission(LR_6_Pred, submitPath)
+```
+
+###### MODEL-7 (random forest with negative example features)
+```{r results='hide'}
+RF_7 = randomForest(Popular ~ ., data=newsTrain[, colnames(newsTrain) %in% selectedColumns], nodesize=5, ntree=2500, importance=TRUE)
+
+trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrain[trainPartition, colnames(newsTrain) %in% selectedColumns]
+
+RF_7.tuned  = train(Popular ~ ., data=tuneTrain, method="rf", trControl=trainControl(method="cv", number=5))
+
+calcAUC(RF_7, newsTrain$Popular)
+# training result: 0.9390981
+
+RF_7_Pred = predict(RF_7, newdata=newsTest, type="prob")[,2]
+generateSubmission(RF_7_Pred, submitPath)
+# testing  result: 0.89867
+```
+
+##### Topic Words
+Add some topic features according [Topic from Google].
+```{r results='hide'}
+questionWords <- c("\\?","^why","should","^when","can","^if","^is")
+religionWords <- c("secular","humanist","humanism","secularist","god","religion","atheist","atheism","islam","islamic","islamist",
+              "islamists","church","atheists","jesus","christ","christian","catholic","pope","imam", "\\<isis\\>","muslim","gay","marriage","israel","jewish","extremist", "fundamentalism","terror","terrorist","terrorism")
+techWords <- c("apple","\\<ios\\>","ipod", "ipad","iphone")
+healthWords <- c("cancer","weight","fat","heart","disease","brain","sex","sexual","love","hate","doctor","doctors","medical","medicine","hospital","hospitals")
+sciWords <- c("climate","warming","global","science","scientists")
+busWords <- c("jobs","employment","work","working","economy")
+poliHiWords <- c("republican", "conservative")
+
+newsData$Question <- as.factor(ifelse(grepl(paste(questionWords, collapse="|"), newsData$Headline)==TRUE,1,0))
+newsData$religionWords <- ifelse(grepl(paste(religionWords, collapse="|"), newsData$Headline)==TRUE,1,0)
+newsData$tech <- ifelse(grepl(paste(techWords, collapse="|"), newsData$Headline)==TRUE,1,0)
+newsData$health <- ifelse(grepl(paste(healthWords, collapse="|"), newsData$Headline)==TRUE,1,0)
+newsData$sci <- ifelse(grepl(paste(sciWords, collapse="|"), newsData$Headline)==TRUE,1,0)
+newsData$business <- ifelse(grepl(paste(busWords, collapse="|"), newsData$Headline)==TRUE,1,0)
+newsData$poliHi <- ifelse(grepl(paste(poliHiWords, collapse="|"), newsData$Headline)==TRUE,1,0)
+newsData$noComment <- ifelse(grepl("no comment necessary", newsData$Headline),1,0)
+newsData$comments <- ifelse(grepl("open for comments", newsData$Headline),1,0)
+```
+
+```{r results='hide', echo=FALSE}
+newsData$Headline  <- NULL
+newsData$Snippet <- NULL
+newsData$Abstract <- NULL
+newsData$Summary <- NULL
+newsData$Text <- NULL
+newsData$PopularFactor <- NULL
+newsData$SectionName <- NULL
+newsData$NewsDesk <- NULL
+newsData$SubsectionName <- NULL
+
+newsTrain = head(newsData, nrow(trainData))
+newsTest  = tail(newsData, nrow(testData))
+```
+
+####### MODEL-8 (logistic regression with topic words)
+```{r results='hide'}
+LR_8 = glm(Popular ~ . - UniqueID, data=newsTrain, family=binomial)
+calcAUClr(LR_8, newsTrain$Popular)
+# training result: 0.9412723 
+
+LR_8_Pred = predict(LR_8, newdata=newsTest, type="response")
+generateSubmission(LR_8_Pred, submitPath)
+# testing  result: 0.89517
+```
+
+###### MODEL-9 (random forest with topic words)
+```{r results='hide'}
+RF_9 = randomForest(Popular ~ . - UniqueID, data=newsTrain, nodesize=5, ntree=2500, importance=TRUE)
+trainPartition = createDataPartition(y=newsTrain$Popular, p=0.5, list=FALSE)
+tuneTrain      = newsTrain[trainPartition, ]
+RF_9.tuned  = train(Popular ~ . - UniqueID, data=tuneTrain, method="rf", trControl=trainControl(method="cv", number=5))
+
+calcAUC(RF_9, newsTrain$Popular)
+# training result: 0.9418562
+
+RF_9_Pred = predict(RF_9, newdata=newsTest, type="prob")[,2]
+generateSubmission(RF_9_Pred, submitPath)
+# testing  result: 0.89962
+```
+
+##### Model Evaluation
+| Model Name | Train ROC | Test ROC |    DESC     |
+| ---------- | --------- | -------- | ----------- |
+|  LR_0      | 0.9315814 | 0.89088 | logistic regression  |
+|  LR_1      | 0.9297705 | 0.89212 | logistic regression on selected variables |
+|  LR_3      | 0.9389116 | **0.90176** | logistic regression with bag of words |
+|  LR_6      | 0.9367199 | 0.90108 | logistic regression with negative features |
+|  LR_8      | 0.9411255 | 0.89801 | logistic regression with topic words  |  
+|  RF_2      | 0.9388249 | 0.89368 | random forest |
+|  RF_4      | 0.9399030 | 0.89965 | random forest with bag of words |
+|  RF_5      | 0.9387642 | 0.89865 | random forest on text cluster |
+|  RF_7      | 0.9389404 | 0.89732 | random forest with negative features |
+|  RF_9      | 0.941084  | 0.89887 | random forest with topic words | 
+
+##### Ensemble
+```{r eval=FALSE}
+EN_1 = (2*RF_9_Pred + 3*RF_4_Pred + 1*LR_3_Pred)/6
+EN_2 = (2*RF_4_Pred + 3*LR_3_Pred + 1*LR_3_Pred)/6
+EN_3 = (2*LR_1_Pred + 3*RF_2_Pred + 1*LR_8_Pred)/6
+EN_4 = (2*LR_6_Pred + 3*RF_5_Pred + 1*RF_7_Pred)/6
+EN_5 = (2*RF_5_Pred + 3*RF_4_Pred + 1*LR_3_Pred)/6
+EN_6 = (1*RF_4_Pred + 2*LR_3_Pred + 1*LR_3_Pred)/4
+
+generateSubmission(EN_1, submitPath)
+generateSubmission(EN_2, submitPath)
+generateSubmission(EN_3, submitPath)
+generateSubmission(EN_4, submitPath)
+generateSubmission(EN_5, submitPath)
+generateSubmission(EN_6, submitPath)
+
+```
+| Model Name | Test ROC |
+| ---------- | -------- |
+|  EN_1      | 0.90238  | 
+|  EN_2      | **0.90550**  |
+|  EN_3      | 0.89973  |
+|  EN_4      | 0.90361  |
+|  EN_5      | 0.90271  |
+|  EN_6      | 0.90529  |
+
+[Topic from Google]:http://www.google.com/trends/topcharts#vm=cat&geo=US&date=2014&cid=travel_and_leisure

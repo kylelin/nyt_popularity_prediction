@@ -89,8 +89,8 @@ calcAUClr <- function(model, truth)
 NGTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 3))
 
 # Prepare a CSV file with predictions for submission
-generateSubmission <- function(predictions) {
-  fileName = paste0("../submit/Submission_", deparse(substitute(predictions)), ".csv")
+generateSubmission <- function(predictions, path) {
+  fileName = paste0(path, deparse(substitute(predictions)), ".csv")
   submission = data.frame(UniqueID = newsTest$UniqueID, Probability1 = predictions)
   write.csv(submission, fileName, row.names=FALSE)
 }
